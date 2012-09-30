@@ -15,8 +15,8 @@
 
 #include "rlib.h"
 
-#define PACKET_HEADER_LENGTH 12
-#define ACK_HEADER_LENGTH 8
+#define HEADER_LENGTH 12
+
 struct reliable_state {
     rel_t *next;			/* Linked list for traversing all connections */
     rel_t **prev;
@@ -26,7 +26,6 @@ struct reliable_state {
     /* Add your own data fields below this */
     int seqno;
     int ackno;
-    char data[500];
 };
 rel_t *rel_list;
 
@@ -96,56 +95,20 @@ rel_demux (const struct config_common *cc,
 {
 }
 
-void send_packet(rel_t *s, void* _packet, char type) {
-    int len;
-    if(type == 'a') {       //dealing with ack_packet
-        struct ack_packet* ack = (struct ack_packet*)_packet;
-        
-        len = ack->len;
-        ack->cksum = cksum(&ack, ack->len);
-        
-        htons(ack->len);
-        htonl(ack->ackno);
-    
-        conn_sendpkt (s->c, ack, len);
-    } else if (type == 'p') {//dealing with regular packet
-        packet_t* packet = (packet_t*)_packet;
-        
-        len = packet->len;
-        packet->cksum = cksum(packet->data, len);
-        
-        htonl(packet->seqno);
-        htonl(packet->ackno);
-        htons(packet->len);
-        
-        conn_sendpkt (s->c, packet, len);
-    }
-}
-
-void send_ackno(rel_t *r){
-    int sent;
-    if (r->ackno == r->seqno) {
-        sent = rel_read(r);
-    }
-    if (sent < 1) {
-        struct ack_packet ack = {0, ACK_HEADER_LENGTH, htonl(r->ackno)};
-        send_packet(r, &ack, 'a');
-    }
-}
-
-void send_end_connection(rel_t *s) {
-    packet_t packet = {0, PACKET_HEADER_LENGTH, s->ackno, s->seqno};
-    send_packet(s, &packet, 'p');
-}
-
 void
 rel_recvpkt (rel_t *r, packet_t *pkt, size_t n){
-    //process packet?
-    int old_chksum = ntohs(pkt->cksum);
-    pkt->cksum = 0;
-    cksum(pkt, n);
+    //increment ackno
+    r->ackno++;
+    int sent;
+    if (r->ackno == r->seqno) {
+        sent = rel_read(r);    }
+    //send an ackno
+    //  first see if you can send a packet
+    //  if not, send an ackno packet
     
-    memcpy(r->data, pkt->data, pkt->len);
+    /*  rel_recvpkt is called when running in single-connection or client mode. In that case, the library already knows what rel_t to use for the particular UDP port receiving the packet, and supplies you with the rel_t. In the case of the server, all UDP packets go to the same port, so you must demultiplex the connections in rel_demux.
+     */
+    
 }
 
 
@@ -154,18 +117,22 @@ rel_read (rel_t *s)
 {
     if (s->seqno == s->ackno) {
         s->seqno++;
-        packet_t packet = {0, PACKET_HEADER_LENGTH, s->ackno, s->seqno};
-        int data_len = conn_input(s->c, packet.data, 500);
+        packet_t packet = {0, HEADER_LENGTH, s->ackno, s->seqno};
+        int data_len = conn_input(s->c, packet.data, 500); 
         if (data_len == 0) {
             return 0;
         } else if (data_len == -1) {
             //deal with EOF or error
             //tear down the connection!
-            send_end_connection(s);
             return -1;
         }
+        
         packet.len += data_len;
-        send_packet(s, &packet, 'p');
+        packet.cksum = cksum(packet.data, packet.len);
+        packet.seqno = htonl(packet.seqno);
+        packet.ackno = htonl(packet.ackno);
+        packet.len   = htonl(packet.len);
+        conn_sendpkt (s->c, &packet, ntohs(packet.len));
         return 1;
     }
     return 0;
@@ -174,9 +141,6 @@ rel_read (rel_t *s)
 void
 rel_output (rel_t *r)
 {
-    // r->ackno++;
-    // send_ackno(r);
-    
 }
 
 void
