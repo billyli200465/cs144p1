@@ -65,7 +65,6 @@ rel_create (conn_t *c, const struct sockaddr_storage *ss,
     /* Do any other initialization you need here */
     r->ackno = 0;
     r->seqno = 0;
-    
     return r;
 }
 
@@ -98,28 +97,16 @@ rel_demux (const struct config_common *cc,
 
 void send_packet(rel_t *s, void* _packet, char type) {
     int len;
-    if(type == 'a') {       //dealing with ack_packet
-//        struct ack_packet* ack = (struct ack_packet*)_packet;
-        packet_t* ack = (packet_t*)_packet;
-        len = ack->len;
-        ack->cksum = cksum(&ack, ack->len);
-        
-        ack->len   = htons(ack->len);
-        ack->ackno = htonl(ack->ackno);
-    
-        conn_sendpkt (s->c, ack, len);
-    } else if (type == 'p') {//dealing with regular packet
-        packet_t* packet = (packet_t*)_packet;
-        
-        len = packet->len;
-        packet->cksum = cksum(packet->data, len);
-        
+    packet_t* packet = (packet_t*)_packet;
+    len = packet->len;
+    packet->cksum = cksum(&packet, packet->len);
+    packet->len   = htons(packet->len);
+    packet->ackno = htonl(packet->ackno);
+    if (type == 'p') {//dealing with regular packet
         packet->seqno = htonl(packet->seqno);
-        packet->ackno = htonl(packet->ackno);
-        packet->len   = htons(packet->len);
-        
-        conn_sendpkt (s->c, packet, len);
     }
+    conn_sendpkt (s->c, packet, len);
+    
 }
 
 void send_ackno(rel_t *r){
@@ -142,14 +129,14 @@ void
 rel_recvpkt (rel_t *r, packet_t *pkt, size_t n){
     //process packet?
     //if packet is zero length, teardown connection
-    int old_chksum = ntohs(pkt->cksum);
+    int old_chksum = pkt->cksum;
     pkt->cksum = 0;
     if(cksum(pkt, n) == old_chksum) {
         //we can continue on
+        memcpy(r->data, pkt->data, pkt->len);
         
     }
     
-    memcpy(r->data, pkt->data, pkt->len);
 }
 
 
