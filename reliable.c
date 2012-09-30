@@ -99,13 +99,13 @@ rel_demux (const struct config_common *cc,
 void send_packet(rel_t *s, void* _packet, char type) {
     int len;
     if(type == 'a') {       //dealing with ack_packet
-        struct ack_packet* ack = (struct ack_packet*)_packet;
-        
+//        struct ack_packet* ack = (struct ack_packet*)_packet;
+        packet_t* ack = (packet_t*)_packet;
         len = ack->len;
         ack->cksum = cksum(&ack, ack->len);
         
-        htons(ack->len);
-        htonl(ack->ackno);
+        ack->len   = htons(ack->len);
+        ack->ackno = htonl(ack->ackno);
     
         conn_sendpkt (s->c, ack, len);
     } else if (type == 'p') {//dealing with regular packet
@@ -114,9 +114,9 @@ void send_packet(rel_t *s, void* _packet, char type) {
         len = packet->len;
         packet->cksum = cksum(packet->data, len);
         
-        htonl(packet->seqno);
-        htonl(packet->ackno);
-        htons(packet->len);
+        packet->seqno = htonl(packet->seqno);
+        packet->ackno = htonl(packet->ackno);
+        packet->len   = htons(packet->len);
         
         conn_sendpkt (s->c, packet, len);
     }
@@ -141,9 +141,13 @@ void send_end_connection(rel_t *s) {
 void
 rel_recvpkt (rel_t *r, packet_t *pkt, size_t n){
     //process packet?
+    //if packet is zero length, teardown connection
     int old_chksum = ntohs(pkt->cksum);
     pkt->cksum = 0;
-    cksum(pkt, n);
+    if(cksum(pkt, n) == old_chksum) {
+        //we can continue on
+        
+    }
     
     memcpy(r->data, pkt->data, pkt->len);
 }
