@@ -17,6 +17,7 @@
 
 #define PACKET_HEADER_LENGTH 12
 #define ACK_HEADER_LENGTH 8
+#define DATA_LEN 500
 #define true 1
 #define false 0
 
@@ -25,7 +26,7 @@ typedef int bool;
 typedef struct _receiver {
     int len;
     int num_packets_accepted; //recieved packets accepted
-    char data[500];
+    char data[DATA_LEN];
 } receiver;
 
 typedef struct _sender {
@@ -60,7 +61,41 @@ void init_sender(sender* s) {
     s->is_empty = true;
     s->num_packets_accepted = 0;
 }
-
+//could consider passing a function, but probably not worth it
+//returns: 1  if packet
+//         0  if ack
+//         -1 if cksum fails
+//         2  if eof indicator
+int ntoh_packet(packet_t* pkt, size_t net_len) {
+    // packet_t * pkt = ((packet_t*)_pkt);
+    int old_cksum = pkt->cksum;
+    int pkt_len = ntohs(pkt->len);
+    pkt->cksum = 0;
+    if(net_len < pkt_len || (cksum(pkt, pkt_len) != old_cksum)) { // can't read packet/cksum should fail
+        return -1;
+    }
+    // do conversions
+    pkt->len = pkt_len;
+    pkt->ackno = ntohl(pkt->ackno);
+    if(pkt->len == ACK_HEADER_LENGTH) {
+        return 0;
+    }
+    if (pkt->len == PACKET_HEADER_LENGTH) { //means teardown
+        return 2;
+    }
+    
+    pkt->seqno = ntohl(pkt->seqno);
+    return 1;
+}
+//should be called before cksum
+void hton_packet(void* _packet, bool is_packet) {
+    packet_t* packet = (packet_t*)_packet;
+    packet->len = htons(packet->len);
+    packet->ackno = htonl(packet->ackno);
+    if(is_packet) {
+        packet->seqno = htonl(packet->seqno);
+    }
+}
 
 /* Creates a new reliable protocol session, returns NULL on failure.
  * Exactly one of c and ss should be NULL.  (ss is NULL when called
@@ -127,99 +162,82 @@ inline int need_an_ack(rel_t *r) {
     return r->send.num_packets_accepted <= r->send.packet.seqno;
 }
 
-void send_packet(rel_t *s, void* _packet, char type) {
-    int len;
+void send_packet(rel_t *s, void* _packet, bool is_packet) {
     packet_t* packet = (packet_t*)_packet;
-    len = packet->len;
-    packet->len   = htons(packet->len);
-    packet->ackno = htonl(packet->ackno);
-    if (type == 'p') {//dealing with regular packet
-        packet->seqno = htonl(packet->seqno);
-    }
-    packet->cksum = cksum(&packet, packet->len);
+    int len = packet->len;
+    hton_packet(_packet, is_packet);
+    packet->cksum = cksum(&packet, len);
     conn_sendpkt (s->c, packet, len);
     
 }
 
 void send_ackno(rel_t *r){
-//    int sent;
-//    if (sent == 0) { // no new data, send a blank ack
+    //    int sent;
+    //    if (sent == 0) { // no new data, send a blank ack
     struct ack_packet ack = {0,
-                             ACK_HEADER_LENGTH,
-                             r->recv.num_packets_accepted+1};
+        ACK_HEADER_LENGTH,
+        r->recv.num_packets_accepted+1};
     
-    send_packet(r, &ack, 'a');
+    send_packet(r, &ack, false);
     r->recv.num_packets_accepted++;
-
+    
     //check if you can send a packet
-//    if (r->send.is_empty) {
-//        sent = rel_read(r);
-//        
-//        } else if (sent < 0) {
-//            //teardown connection
-//        }
-//    }    
-    }
+    //    if (r->send.is_empty) {
+    //        sent = rel_read(r);
+    //
+    //        } else if (sent < 0) {
+    //            //teardown connection
+    //        }
+    //    }
+}
 
 void send_end_connection(rel_t *s) {
     packet_t packet = {0, PACKET_HEADER_LENGTH, s->recv.num_packets_accepted+1, s->send.packet.seqno};
-    send_packet(s, &packet, 'p');
+    send_packet(s, &packet, true);
 }
 
 void do_tear_down(rel_t *r) {
-//    if (r->recv.len == 0) {
-//        conn_output(r->c, r->recv.data, 0);
-//    }
-//    send eof
-//    send acks until done
-//    You have read an EOF from the other side (i.e., a Data packet of len 12, where the payload field is 0 bytes).
-//    You have read an EOF or error from your input (conn_input returned -1).
-//    All packets you have sent have been acknowledged.
-//    You have written all output data with conn_output.
+    //    if (r->recv.len == 0) {
+    //        conn_output(r->c, r->recv.data, 0);
+    //    }
+    //    send eof
+    //    send acks until done
+    //    You have read an EOF from the other side (i.e., a Data packet of len 12, where the payload field is 0 bytes).
+    //    You have read an EOF or error from your input (conn_input returned -1).
+    //    All packets you have sent have been acknowledged.
+    //    You have written all output data with conn_output.
 }
 
 void
-rel_recvpkt (rel_t *r, packet_t *pkt, size_t n){
-    //process packet?
-    //process ackno
-    //  chksum
-    //  if ackno == r->seqno+1 r->accepted++
-    //  
-    //if packet is zero length, teardown connection
-    //if packet is used && the right seqno, && incr seqno
-    //
-    int old_chksum = pkt->cksum;
-    pkt->cksum = 0;
-    if(cksum(pkt, pkt->len) == old_chksum) {
-        //we can continue on
-        r->send.num_packets_accepted = pkt->ackno-1;
-        if(pkt->len == PACKET_HEADER_LENGTH) { //means teardown
-            do_tear_down(r);
-        }
-        if (pkt->len > ACK_HEADER_LENGTH) {
-            memcpy(r->recv.data, pkt->data, pkt->len);
-        }
+rel_recvpkt (rel_t *r, packet_t *pkt, size_t n) {
+    int packet_type = ntoh_packet(pkt, n);//destructive modification on pkt
+    if (packet_type == -1) return; //it's corrupted
+    if (packet_type >= 0 &&
+        r->send.num_packets_accepted == pkt->ackno-2) { // it's ackno
+        r->send.num_packets_accepted++;
+    } if (packet_type == 1 && r->recv.len == 0) { //it's a packet
+        memcpy(r->recv.data, pkt->data, pkt->len);
+        r->recv.len = pkt->len;
+        
     }
 }
 
 
 int rel_read (rel_t *s) {
-    //I have stuff to read.
-    //when the function is called, I check if I can send it
     if (!s->send.is_empty) {
         return 0;
     }
     s->send.packet.cksum = 0;
     s->send.packet.len = PACKET_HEADER_LENGTH;
     s->send.packet.ackno = s->recv.num_packets_accepted+1;
-    
-    int data_len = conn_input(s->c, s->send.packet.data, 500);
+    int data_len = conn_input(s->c, s->send.packet.data, DATA_LEN);
     if (data_len > 0) {
+        printf("%s\n", "data_len is legit");
         //data has been read, incr seqno and close buffer for use
         s->send.packet.seqno++;
         s->send.is_empty = false;
         s->send.packet.len += data_len;
-        send_packet(s, &s->send.packet, 'p');
+        send_packet(s, &s->send.packet, true);
         return 1;
     } else if (data_len == -1) {
         //deal with EOF or error
@@ -248,13 +266,14 @@ void
 rel_timer ()
 {
     rel_t *rel = rel_list;
-    do {
-        if (!rel->send.is_empty) {
-            send_packet(rel, &rel->send.packet, 'p');
-        }
-        rel = rel->next;
-    } while (rel != rel_list);
-    
+    if (!rel) {
+        do {
+            if (!rel->send.is_empty) {
+                send_packet(rel, &rel->send.packet, true);
+            }
+            rel = rel->next;
+        } while (rel != rel_list);
+    }
     /* Retransmit any packets that need to be retransmitted */
     
 }
