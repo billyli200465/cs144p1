@@ -12,18 +12,15 @@
 #include <sys/socket.h>
 #include <sys/uio.h>
 #include <netinet/in.h>
-
+#include <stdbool.h>
 #include "rlib.h"
 
 #define PACKET_HEADER_LENGTH 12
 #define ACK_HEADER_LENGTH    8
 #define DATA_LEN             500
-#define true                 1
-#define false                0
 
 void send_packet(rel_t *s);
 
-typedef int bool;
 
 typedef struct _receiver {
     int len;
@@ -32,9 +29,10 @@ typedef struct _receiver {
 } receiver;
 
 typedef struct _sender {
-    packet_t packet;
     int last_seqno_sent; //sent packets accepted
     bool is_empty;
+    packet_t packet;
+    
 } sender;
 
 struct reliable_state {
@@ -43,8 +41,9 @@ struct reliable_state {
     conn_t *c;          /* This is the connection object */
     /* Add your own data fields below this */
     bool end_connection;
-    receiver recv;
     sender send;
+    receiver recv;
+    bool kill_all;
 };
 rel_t *rel_list;
 
@@ -119,6 +118,7 @@ void hton_packet(packet_t* packet) {
 void send_end_connection(rel_t *s) {
     s->send.packet.seqno++;
     s->send.packet.len = 0;
+    s->send.packet.ackno = 1;
     send_packet(s);
 }
 
@@ -154,6 +154,7 @@ rel_create (conn_t *c, const struct sockaddr_storage *ss,
     /* Do any other initialization you need here */
     init_receiver(&r->recv);
     init_sender(&r->send);
+    r->kill_all =false;
     return r;
 }
 
@@ -190,11 +191,10 @@ rel_demux (const struct config_common *cc,
 void send_packet(rel_t *s) {
     s->send.packet.ackno = s->recv.last_seqno_processed+1;
     packet_t packet = s->send.packet;
-    int len = packet.len;
     
+    int len = packet.len;
     hton_packet(&packet);
     if (conn_sendpkt (s->c, &packet, len) != len) {
-        fprintf(stderr, "%s\n", "trouble sending packet");
         exit(1);
     }
 }
@@ -229,12 +229,13 @@ rel_recvpkt (rel_t *r, packet_t *pkt, size_t n) {
     if (packet_type >= 0 && //has ackno
         r->send.last_seqno_sent == pkt->ackno-1) { //has valid ackno
         r->send.is_empty = true;
+        
+        rel_read(r);
     } if (packet_type == 1 && // has data
           r->recv.len == 0 && // can be processed
           pkt->seqno == r->recv.last_seqno_processed+1) { //is in sequence
         memcpy(r->recv.data, pkt->data, pkt->len);
         r->recv.len = pkt->len - PACKET_HEADER_LENGTH;
-        //a
         rel_output(r);
     }
 }
@@ -244,7 +245,7 @@ int rel_read (rel_t *s) {
     if (!s->send.is_empty) return 0;
     s->send.packet.cksum = 0;
     s->send.packet.len = PACKET_HEADER_LENGTH;
-    int data_len = conn_input(s->c, s->send.packet.data, DATA_LEN);
+    int data_len = conn_input(s->c, s->send.packet.data, DATA_LEN-1);
     if (data_len > 0) {
         //data has been read, incr seqno and close buffer for use
         s->send.packet.seqno++;
@@ -265,9 +266,8 @@ int rel_read (rel_t *s) {
 void
 rel_output (rel_t *r)
 {
-    if (r->recv.len &&
-        conn_bufspace(r->c) >= r->recv.len &&
-        conn_output(r->c, r->recv.data, r->recv.len) == r->recv.len) {
+    if (r->recv.len && conn_bufspace(r->c) >= r->recv.len) {
+        conn_output(r->c, r->recv.data, r->recv.len);
         r->recv.last_seqno_processed++; //change to reflect new packet
         r->recv.len = 0;
         send_ackno(r);
@@ -277,6 +277,7 @@ rel_output (rel_t *r)
 void
 rel_timer ()
 {
+    //work
     rel_t *rel = rel_list;
     //rel_list isn't a circle!
     while (rel != NULL) {
